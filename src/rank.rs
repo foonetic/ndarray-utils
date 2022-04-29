@@ -18,6 +18,12 @@ where
     /// computed (i.e. NaN values in floating point matrices). The lowest rank
     /// is one.
     fn rank(&self, method: RankMethod) -> Array<usize, D>;
+
+    /// Returns an array of the same size of the original, where each value is
+    /// replaced with a bucket identifier. Zero is reserved for elements whose
+    /// bucket cannot be computed (i.e. NaN values in floating point matrices).
+    /// The lowest bucket is one and the maximum bucket is the given number.
+    fn discretize(&self, method: RankMethod, buckets: usize) -> Array<usize, D>;
 }
 
 pub trait RankAxisExt<A, S, D>
@@ -29,6 +35,12 @@ where
     /// along the given axis. For example, in a 2d matrix, setting Axis(0) will
     /// rank elements within rows.
     fn rank_axis(&self, axis: Axis, method: RankMethod) -> Array<usize, D>;
+
+    /// Returns an array of the same size as the original, where each value is
+    /// replaced with a bucket across all values sharing that element's position
+    /// along the given axis. For example, in a 2d matrix, setting Axis(0) will
+    /// bucket elements within rows.
+    fn discretize_axis(&self, axis: Axis, method: RankMethod, buckets: usize) -> Array<usize, D>;
 }
 
 impl<A, S, D> RankExt<A, S, D> for ArrayBase<S, D>
@@ -74,6 +86,56 @@ where
 
         return ranks;
     }
+
+    fn discretize(&self, method: RankMethod, buckets: usize) -> Array<usize, D> {
+        let mut ranks = self.rank(method);
+        if let Some(max_rank) = ranks.iter().reduce(|a, b| if *a > *b { a } else { b }) {
+            let ranks_per_bucket = *max_rank / buckets;
+
+            // As a special case, there isn't enough data to cover all the buckets.
+            let (buckets, ranks_per_bucket) = if ranks_per_bucket == 0 {
+                (*max_rank, 1)
+            } else {
+                (buckets, ranks_per_bucket)
+            };
+
+            let remainder = *max_rank % buckets;
+
+            let mut rank_cut_points = Vec::new();
+            let mut low_rank: usize = 1;
+            // Separate handling of the remainder and non-remainder cases to
+            // allocate the ranks that don't evenly divide the buckets.
+            for _ in 0..remainder {
+                // For example: if the low rank of this bucket is 1 and there
+                // are normally 2 ranks per bucket, then in the remainder case
+                // the first bucket should include the extra element, i.e. the
+                // range [1, 2, 3].
+                let high_rank = low_rank + ranks_per_bucket;
+                rank_cut_points.push(low_rank);
+                low_rank = high_rank + 1;
+            }
+            for _ in remainder..buckets {
+                let high_rank = low_rank + ranks_per_bucket - 1;
+                rank_cut_points.push(low_rank);
+                low_rank = high_rank + 1;
+            }
+            ranks.map_inplace(|x| {
+                if *x == 0 {
+                    return;
+                }
+                let mut bucket = 0;
+                for cut in rank_cut_points.iter() {
+                    if *x >= *cut {
+                        bucket += 1;
+                    } else {
+                        break;
+                    }
+                }
+                *x = bucket;
+            });
+        }
+        ranks
+    }
 }
 
 impl<A, S, D> RankAxisExt<A, S, D> for ArrayBase<S, D>
@@ -89,6 +151,15 @@ where
         let mut ranks = Array::zeros(self.dim());
         for (i, subarray) in self.axis_iter(axis).enumerate() {
             let ranked = subarray.rank(method);
+            ranked.assign_to(ranks.index_axis_mut(axis, i));
+        }
+        ranks
+    }
+
+    fn discretize_axis(&self, axis: Axis, method: RankMethod, buckets: usize) -> Array<usize, D> {
+        let mut ranks = Array::zeros(self.dim());
+        for (i, subarray) in self.axis_iter(axis).enumerate() {
+            let ranked = subarray.discretize(method, buckets);
             ranked.assign_to(ranks.index_axis_mut(axis, i));
         }
         ranks
@@ -155,5 +226,33 @@ mod tests {
         let arr = array![[6, 5, 4], [3, 2, 1]];
         let ranks = arr.rank_axis(Axis(1), RankMethod::Minimum);
         assert_eq!(ranks, array![[2, 2, 2], [1, 1, 1]]);
+    }
+
+    #[test]
+    fn discretize_matrix_full() {
+        let arr = array![[6, 5, 4], [3, 2, 1]];
+        let ranks = arr.discretize(RankMethod::Minimum, 3);
+        assert_eq!(ranks, array![[3, 3, 2], [2, 1, 1]]);
+    }
+
+    #[test]
+    fn discretize_matrix_rows() {
+        let arr = array![[6, 5, 4], [3, 2, 1]];
+        let ranks = arr.discretize_axis(Axis(0), RankMethod::Minimum, 2);
+        assert_eq!(ranks, array![[2, 1, 1], [2, 1, 1]]);
+    }
+
+    #[test]
+    fn discretize_matrix_cols() {
+        let arr = array![[6, 5, 4], [3, 2, 1]];
+        let ranks = arr.discretize_axis(Axis(1), RankMethod::Minimum, 2);
+        assert_eq!(ranks, array![[2, 2, 2], [1, 1, 1]]);
+    }
+
+    #[test]
+    fn discretize_matrix_with_missing_values() {
+        let arr = array![[6., 5., NAN], [3., NAN, 1.]];
+        let ranks = arr.discretize(RankMethod::Minimum, 2);
+        assert_eq!(ranks, array![[2, 2, 0], [1, 0, 1]]);
     }
 }
