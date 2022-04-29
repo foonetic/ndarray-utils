@@ -2,6 +2,9 @@
 name = "ndarray-utils"
 version = "0.1.0"
 edition = "2021"
+description = "ndarray utilities"
+license = "MIT"
+repository = "https://github.com/foonetic/ndarray-utils"
 
 [dependencies]
 ndarray = "0.15"
