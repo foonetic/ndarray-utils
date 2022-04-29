@@ -14,7 +14,9 @@ where
     S: Data<Elem = A>,
 {
     /// Returns an array of the same size as the original, where each value is
-    /// replaced with a rank. Zero is the lowest rank.
+    /// replaced with a rank. Zero is reserved for elements whose rank cannot be
+    /// computed (i.e. NaN values in floating point matrices). The lowest rank
+    /// is one.
     fn rank(&self, method: RankMethod) -> Array<usize, D>;
 }
 
@@ -31,7 +33,7 @@ where
 
 impl<A, S, D> RankExt<A, S, D> for ArrayBase<S, D>
 where
-    A: Ord,
+    A: PartialOrd + Default,
     S: Data<Elem = A>,
     D: Dimension,
     <D as Dimension>::Pattern: NdIndex<D>,
@@ -39,11 +41,14 @@ where
     fn rank(&self, method: RankMethod) -> Array<usize, D> {
         let mut index_and_value = Vec::new();
         for (index, element) in self.indexed_iter() {
+            if element.partial_cmp(&A::default()).is_none() {
+                continue;
+            }
             index_and_value.push((index, element));
         }
-        index_and_value.sort_by_key(|x| x.1);
+        index_and_value.sort_unstable_by(|a, b| a.1.partial_cmp(b.1).unwrap());
 
-        let mut rank: usize = 0;
+        let mut rank: usize = 1;
         let mut index: usize = 0;
 
         let mut ranks = Array::zeros(self.dim());
@@ -58,8 +63,8 @@ where
 
             let assign_rank = match method {
                 RankMethod::Minimum => rank,
-                RankMethod::Maximum => rank + index - start_index,
-                RankMethod::Average => rank + (index - start_index) / 2,
+                RankMethod::Maximum => rank + index - start_index - 1,
+                RankMethod::Average => rank + (index - start_index - 1) / 2,
             };
             for (key, _) in index_and_value[start_index..index].iter() {
                 ranks[key.clone()] = assign_rank;
@@ -73,7 +78,7 @@ where
 
 impl<A, S, D> RankAxisExt<A, S, D> for ArrayBase<S, D>
 where
-    A: Ord,
+    A: PartialOrd + Default,
     S: Data<Elem = A>,
     D: Dimension + RemoveAxis,
     <D as Dimension>::Pattern: NdIndex<D>,
@@ -94,53 +99,61 @@ where
 mod tests {
     use super::*;
     use ndarray::array;
+    use std::f64::NAN;
 
     #[test]
     fn rank_vector_no_ties() {
         let arr = array![4, 3, 2, 1];
         let ranks = arr.rank(RankMethod::Minimum);
-        assert_eq!(ranks, array![3, 2, 1, 0]);
+        assert_eq!(ranks, array![4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn rank_vector_missing_values() {
+        let arr = array![4., 3., NAN, 1.];
+        let ranks = arr.rank(RankMethod::Minimum);
+        assert_eq!(ranks, array![3, 2, 0, 1]);
     }
 
     #[test]
     fn rank_vector_ties_minimum() {
         let arr = array![4, 2, 2, 1];
         let ranks = arr.rank(RankMethod::Minimum);
-        assert_eq!(ranks, array![3, 1, 1, 0]);
+        assert_eq!(ranks, array![4, 2, 2, 1]);
     }
 
     #[test]
     fn rank_vector_ties_maximum() {
         let arr = array![4, 2, 2, 1];
         let ranks = arr.rank(RankMethod::Maximum);
-        assert_eq!(ranks, array![3, 2, 2, 0]);
+        assert_eq!(ranks, array![4, 3, 3, 1]);
     }
 
     #[test]
     fn rank_vector_ties_average() {
         let arr = array![4, 1, 1, 1];
         let ranks = arr.rank(RankMethod::Average);
-        assert_eq!(ranks, array![3, 1, 1, 1]);
+        assert_eq!(ranks, array![4, 2, 2, 2]);
     }
 
     #[test]
     fn rank_matrix_full() {
         let arr = array![[6, 5, 4], [3, 2, 1]];
         let ranks = arr.rank(RankMethod::Minimum);
-        assert_eq!(ranks, array![[5, 4, 3], [2, 1, 0]]);
+        assert_eq!(ranks, array![[6, 5, 4], [3, 2, 1]]);
     }
 
     #[test]
     fn rank_matrix_rows() {
         let arr = array![[6, 5, 4], [3, 2, 1]];
         let ranks = arr.rank_axis(Axis(0), RankMethod::Minimum);
-        assert_eq!(ranks, array![[2, 1, 0], [2, 1, 0]]);
+        assert_eq!(ranks, array![[3, 2, 1], [3, 2, 1]]);
     }
 
     #[test]
     fn rank_matrix_cols() {
         let arr = array![[6, 5, 4], [3, 2, 1]];
         let ranks = arr.rank_axis(Axis(1), RankMethod::Minimum);
-        assert_eq!(ranks, array![[1, 1, 1], [0, 0, 0]]);
+        assert_eq!(ranks, array![[2, 2, 2], [1, 1, 1]]);
     }
 }
