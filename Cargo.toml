@@ -1,5 +1,6 @@
 [package]
 description = "ndarray utilities"
+documentation = "https://docs.rs/ndarray-utils"
 edition = "2021"
 license = "MIT"
 name = "ndarray-utils"
